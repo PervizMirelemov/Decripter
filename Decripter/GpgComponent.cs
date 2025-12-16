@@ -2,73 +2,94 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Text; // Нужно для кодировок
+using System.Text;
 
 namespace Decripter
 {
-    // Интерфейс для 1С
     [Guid("D6F9C2A1-8E4B-4C3D-9F0A-1B2C3D4E5F6A")]
     public interface IGpgComponent
     {
-        string DecryptFile(string inputFile, string outputFile, string password);
+        // 4-й параметр теперь: pathKeyFile (Путь к файлу ключа)
+        string DecryptFile(string inputFile, string outputFile, string password, string pathKeyFile);
     }
 
-    // Основной класс
     [Guid("A1B2C3D4-E5F6-7890-1234-567890ABCDEF")]
     [ClassInterface(ClassInterfaceType.None)]
-    [ProgId("MyGpg.Wrapper")] // Имя поменяли на Wrapper, чтобы не путать
+    [ProgId("MyGpg.Wrapper")]
     [ComVisible(true)]
     public class GpgComponent : IGpgComponent
     {
-        // Путь к GPG обычно такой (проверьте у себя!)
         private const string GpgPath = @"C:\Program Files (x86)\GnuPG\bin\gpg.exe";
-
-        public string DecryptFile(string inputFile, string outputFile, string password)
+        private const string DefaultFolderPath = @"C:\Users\pmiralamov\Downloads\secret.asc";
+        public string DecryptFile(string inputFile, string outputFile, string password, string pathKeyFile = DefaultFolderPath)
         {
+            // Создаем уникальную временную папку для этой операции
+            string tempHomeDir = Path.Combine(Path.GetTempPath(), "GPG_" + Guid.NewGuid().ToString());
+
             try
             {
-                // Проверки
-                if (!File.Exists(GpgPath)) return "Ошибка: Не установлен Gpg4win (нет gpg.exe)";
+                // 0. Проверки
+                if (!File.Exists(pathKeyFile)) return "Ошибка: Файл ключа не найден: " + pathKeyFile;
+                if (!File.Exists(GpgPath)) return "Ошибка: Не установлен Gpg4win";
                 if (!File.Exists(inputFile)) return "Ошибка: Входящий файл не найден";
 
-                // Формируем аргументы для консольной команды
-                // --batch --yes --pinentry-mode loopback позволяют вводить пароль без окон
-                string arguments = string.Format(
-                    "--batch --yes --pinentry-mode loopback --passphrase \"{0}\" --output \"{1}\" --decrypt \"{2}\"",
-                    password, outputFile, inputFile);
+                Directory.CreateDirectory(tempHomeDir);
 
-                ProcessStartInfo psi = new ProcessStartInfo
-                {
-                    FileName = GpgPath,
-                    Arguments = arguments,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true, // Скрывает черное окно
-                    StandardOutputEncoding = Encoding.UTF8, // Чтобы понимать кириллицу
-                    StandardErrorEncoding = Encoding.UTF8
-                };
+                // 1. ИМПОРТ КЛЮЧА во временную базу
+                // --homedir указывает GPG использовать нашу временную папку
+                string importArgs = string.Format("--homedir \"{0}\" --batch --import \"{1}\"", tempHomeDir, pathKeyFile);
 
-                using (Process process = Process.Start(psi))
-                {
-                    // Читаем ошибки (если есть)
-                    string errorOutput = process.StandardError.ReadToEnd();
-                    process.WaitForExit();
+                string importResult = RunGpg(importArgs);
+                if (importResult != "OK") return "Ошибка импорта ключа: " + importResult;
 
-                    if (process.ExitCode == 0)
-                    {
-                        return "OK";
-                    }
-                    else
-                    {
-                        // Если ошибка - возвращаем то, что сказал GPG
-                        return "Ошибка GPG: " + errorOutput;
-                    }
-                }
+                // 2. РАСШИФРОВКА
+                // Тоже используем --homedir, чтобы GPG увидел ключ, который мы только что импортировали
+                string decryptArgs = string.Format(
+                    "--homedir \"{0}\" --batch --yes --pinentry-mode loopback --passphrase \"{1}\" --output \"{2}\" --decrypt \"{3}\"",
+                    tempHomeDir, password, outputFile, inputFile);
+
+                return RunGpg(decryptArgs);
             }
             catch (Exception ex)
             {
-                return "Критическая ошибка Wrapper: " + ex.Message;
+                return "Критическая ошибка: " + ex.Message;
+            }
+            finally
+            {
+                // 3. УБОРКА: Обязательно удаляем временную папку с ключами
+                if (Directory.Exists(tempHomeDir))
+                {
+                    try { Directory.Delete(tempHomeDir, true); } catch { }
+                }
+            }
+        }
+
+        // Вспомогательный метод запуска процесса
+        private string RunGpg(string arguments)
+        {
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = GpgPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            using (Process process = Process.Start(psi))
+            {
+                string error = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+
+                // Код 0 = Успех
+                if (process.ExitCode == 0) return "OK";
+
+                // Иногда GPG пишет предупреждения в Error, но работает. 
+                // Но если ExitCode != 0, это точно ошибка.
+                return error;
             }
         }
     }

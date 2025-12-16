@@ -13,7 +13,7 @@ class Program
         GpgComponent comp = new GpgComponent();
 
         // 2. Ваши пути (проверьте их!)
-        string inFile = @"C:\Users\pmiralamov\Downloads\file.pdf.gpg";
+        string inFile = @"C:\Users\pmiralamov\Downloads\Example.txt.gpg";
         
         string outFile = inFile.Replace(".gpg", "");
 
